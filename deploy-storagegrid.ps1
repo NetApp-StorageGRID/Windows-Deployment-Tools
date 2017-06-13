@@ -1,8 +1,8 @@
 
 param (
-    [parameter(position=0)]
+    [parameter(mandatory=$true, position=0)]
     [ValidateNotNullOrEmpty()]
-    [string]$FilePath = ".\grid.ini",
+    [string]$FilePath,
 
     [parameter(position=1)]
     [ValidateNotNullOrEmpty()]
@@ -13,10 +13,14 @@ param (
     [switch]$Serial=$false,
 
     [parameter(position=3)]
-    [PSObject]$ConfigData,
+    [ValidateNotNullOrEmpty()]
+    [switch]$Validate=$false,
 
     [parameter(position=4)]
-    [string[]]$Nodes
+    [string[]]$Nodes,
+
+    [parameter(position=5)]
+    [PSObject]$ConfigData
 )
 
 $VIModules = @(
@@ -232,21 +236,29 @@ function Login-VIServer {
   )
 
   if ($global:CurTarget -eq $Target -And $global:CurUsername -eq $User -And $global:CurPassword -eq $Password) {
+    Write-Host "`nUsing existing connection$ to vCenter Server $defaultVIServer"
     return
   }
 
-  $global:CurTarget = $Target
-  $global:CurUsername = $User
-  $global:CurPassword = $Password
+  $global:CurTarget = $null
+  $global:CurUsername = $null
+  $global:CurPassword = $null
   Disconnect-VIServer -Force -Confirm:$false -ErrorAction SilentlyContinue
-  Connect-VIServer -Server $Target.Host -User $User -Password $Password > $null
-  Write-Host "`nConnected to vCenter Server $defaultVIServer"
-
+  Try {
+    Connect-VIServer -Server $Target.Host -User $User -Password $Password -ErrorAction Stop > $null
+    $global:CurTarget = $Target
+    $global:CurUsername = $User
+    $global:CurPassword = $Password 
+    Write-Host "`nConnected to vCenter Server $defaultVIServer"
+  }
+  Catch {
+    throw
+  }
   $global:PortGroups = @{}
-  Get-VDPortgroup -ErrorAction SilentlyContinue | % { $PortGroups.Add($_.Name, $_) }
-  Get-VirtualPortGroup -Standard -ErrorAction SilentlyContinue | % { $PortGroups.Add($_.Name, $_) } 
+  Get-VDPortgroup -ErrorAction SilentlyContinue | % { $PortGroups[$_.Name] = $_ }
+  Get-VirtualPortGroup -Standard -ErrorAction SilentlyContinue | % { $PortGroups[$_.Name] = $_ } 
   $global:Datastores = @{}
-  Get-Datastore -ErrorAction SilentlyContinue | % { $Datastores.Add($_.Name, $_) } 
+  Get-Datastore -ErrorAction SilentlyContinue | % { $Datastores[$_.Name] = $_ } 
 }
 
 # Set Network OvfConfiguration parameters for a given network
@@ -307,9 +319,35 @@ function Set-Network {
     $fieldName = "$($netName)_NETWORK_$opt"
     $value = Get-Value -Config $Config -Section $Node -Name $fieldName
     if (!$value) {
-      throw [System.ArgumentException] "$fieldName must have a value for node $Node"
+      throw [System.ArgumentException] "$fieldName must have a value"
+    }
+    # Validate we have valid IP values
+    Try {
+      switch ($opt) {
+        'IP' { $ip = [IPAddress]$value; }
+        'MASK' { $mask = [IPAddress]$value; }
+        'GATEWAY' { $gateway = [IPAddress]$value; }
+      }
+    }
+    Catch {
+      if ($_.FullyQualifiedErrorId -eq "InvalidCastParseTargetInvocation") {
+        throw [System.ArgumentException] "Invalid IP address or mask '$value' for $fieldName"
+      }
+      else {
+        throw
+      }
     }
     $ovfConfig.Common.psobject.Members[$fieldName].Value.Value = $value
+  }
+  # Validate we have a valid MASK
+  $mask.GetAddressBytes() | % { 
+    if ([convert]::ToString($_, 2) -match '01') {
+      throw [System.ArgumentException] "Invalid IP network mask '$value' for $fieldName"
+    }
+  }
+  # Validate IP and Gateway are in the same subnet
+  if (($ip.Address -band $mask.Address) -ne ($gateway.Address -band $mask.Address)) {
+    throw [System.ArgumentException] "Network $netName IP and Gateway are not in the same subnet"
   }
 }
 
@@ -385,26 +423,25 @@ function Find-Host {
 }
 
 
-function Replace-Storage {
+function Parse-Disk {
   param (
-    [parameter(mandatory=$true, position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
-    [PSObject]$VM,
+    [parameter(mandatory=$true, position=0)]
+    [string[]]$DiskSpec,
 
     [parameter(mandatory=$true, position=1)]
-    [PSObject]$Info
+    [string]$NodeType,
+
+    [parameter(mandatory=$true, position=2)]
+    [string]$Datastore
   )
 
   $instances = $null
   $capacity = $null
-
-
-  # First, parse potentially multiple disk specs
-  # Ex:
-  #   DISK  = INSTANCES = 1 , CAPACITY = 50 
-  #   DISK  = INSTANCES = 2 , CAPACITY = 100, DATASTORE = ds1
+  $datastore = $null
   $totalInstances = 0
   $diskSpecs = @()
-  $Info.DiskSpec | %{ 
+  # Ex:   DISK  = INSTANCES = 2 , CAPACITY = 100, DATASTORE = ds1
+  $DiskSpec | %{ 
     $parts = $_ -Split ','
     if ($parts.Count -lt 2) {
       throw [System.ArgumentException] "Malformed DISK option"
@@ -430,14 +467,14 @@ function Replace-Storage {
       throw [System.ArgumentException] "Malformed DISK option"
     }
     if (! $datastore) {
-      $datastore = $Info.Datastore
+      $datastore = $Datastore
     }
-    if ($Info.NodeType -eq 'VM_Admin_Node') {
+    if ($NodeType -eq 'VM_Admin_Node') {
       if ($capacity -lt 100) {
         throw [System.ArgumentException] "Admin node DISK option must have CAPACITY >= 100"
       }
     }
-    elseif ($Info.NodeType -eq 'VM_Storage_Node') {
+    elseif ($NodeType -eq 'VM_Storage_Node') {
       if ($capacity -lt 50) {
         throw [System.ArgumentException] "Storage node DISK option must have CAPACITY >= 50 (production minimum is 4096)"
       }
@@ -450,17 +487,30 @@ function Replace-Storage {
     $totalInstances = $totalInstances + $instances
   }
 
-  if ($Info.NodeType -eq 'VM_Admin_Node') {
+  if ($NodeType -eq 'VM_Admin_Node') {
     if ($totalInstances -ne 2) {
       throw [System.ArgumentException] "Admin node DISK option must have total INSTANCES = 2"
     }
   }
-  elseif ($Info.NodeType -eq 'VM_Storage_Node') {
+  elseif ($NodeType -eq 'VM_Storage_Node') {
     if ($totalInstances -lt 3 -Or $totalInstances -gt 16) {
       throw [System.ArgumentException] "Storage node DISK options must have total INSTANCES >= 3 and <= 16"
     }
   }
+  $diskSpecs
+}
 
+
+function Replace-Storage {
+  param (
+    [parameter(mandatory=$true, position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+    [PSObject]$VM,
+
+    [parameter(mandatory=$true, position=1)]
+    [PSObject]$Info
+  )
+
+  $totalInstances = ($Info.DiskSpecs | Measure-Object 'instances' -Sum).Sum
   # First, remove default storage. Hard disk 1 is root - don't delete.
   # Admin nodes have 2-3, SN have 2-4.
   New-Event -SourceIdentifier StorageEvent -Sender $Info.Id -MessageData $Status.Replacing.PadRight($Status.MaxLen) -EventArguments @{
@@ -472,7 +522,7 @@ function Replace-Storage {
   $progressPreference = 'Continue'
 
   # Create and attach new storage
-  foreach ($diskSpec in $diskSpecs) {
+  foreach ($diskSpec in $Info.DiskSpecs) {
     $datastore = $Datastores[$diskSpec['datastore']]
     $capacity = $diskSpec['capacity']
     $instances = $diskSpec['instances']
@@ -530,19 +580,21 @@ if (! $Nodes) {
   $Nodes = $config.Keys
 }
 
-# Register for progress events from the storage jobs
-$action = Register-EngineEvent -SourceIdentifier StorageEvent -Action {
-#  Write-Host "Progress:" $Event.SourceArgs.PercentComplete $Event.MessageData
-  Write-Progress -Id $Event.Sender -Activity "Deploy Node $($Event.SourceArgs.Node)" -Status $Event.MessageData -PercentComplete $Event.SourceArgs.PercentComplete
-  if ($Event.SourceArgs.PercentComplete -ge 100) {
-    Start-Sleep -Seconds 2
-    Write-Progress -Id $Event.Sender -Activity "Deploy Node $($Event.SourceArgs.Node)" -Completed
+if (! $Validate) {
+  # Register for progress events from the storage jobs
+  $action = Register-EngineEvent -SourceIdentifier StorageEvent -Action {
+  #  Write-Host "Progress:" $Event.SourceArgs.PercentComplete $Event.MessageData
+    Write-Progress -Id $Event.Sender -Activity "Deploy Node $($Event.SourceArgs.Node)" -Status $Event.MessageData -PercentComplete $Event.SourceArgs.PercentComplete
+    if ($Event.SourceArgs.PercentComplete -ge 100) {
+      Start-Sleep -Seconds 2
+      Write-Progress -Id $Event.Sender -Activity "Deploy Node $($Event.SourceArgs.Node)" -Completed
+    }
   }
-}
 
-Trap {
-  $action | Remove-Job -Force
-  Break
+  Trap {
+    $action | Remove-Job -Force
+    Break
+  }
 }
 
 # Deploy nodes
@@ -553,6 +605,7 @@ foreach ($node in $Nodes) {
   if (! $config.Contains($node)) {
     Write-Host -ForegroundColor RED "Error: Node $node not found in configuration file $Filepath"
     $error_found = $true
+    Continue
   }
   if ($error_found) {
     continue
@@ -638,14 +691,20 @@ foreach ($node in $Nodes) {
     # See if we have a DISK option.  If so, gather up storage parameters
     $diskSpec = Get-Value  -Config $config -Section $node -Name 'DISK'
     if ($diskSpec) {
+      $diskSpecs = Parse-Disk -DiskSpec $diskSpec -NodeType $nodeType -Datastore $dsName
       $StorageInfo[$node] = @{
         'Node' = $node;
         'Id' = $nodeId;
         'DiskFormat' = $dsFormat;
         'Datastore' = $dsName;
         'NodeType' = $nodeType;
-        'DiskSpec' = $diskSpec;
+        'DiskSpecs' = $diskSpecs;
       }
+    }
+
+    # Don't deploy if only validating or there was an error
+    if ($Validate -or $error_found) {
+      Continue
     }
 
     Write-Host "Deploying $node to $vmHost in datastore $dsName"
@@ -664,7 +723,7 @@ foreach ($node in $Nodes) {
     }
     else {
       # Import the OVF asynchronously, keeping track of tasks.
-      $task = Import-VApp @ImportArgs -RunAsync
+      $task = Import-VApp @ImportArgs -RunAsync -ErrorAction Stop
       $Tasks[$node] = @{
         'Id' = $nodeId;
         'Task' = $task;
@@ -676,6 +735,17 @@ foreach ($node in $Nodes) {
   {
     Write-Host -ForegroundColor Red "Error: $($node): $_"
   }
+  Catch
+  {
+    if ($action) {
+      $action | Remove-Job -Force
+    }
+    throw
+  }
+}
+
+if ($Validate) {
+  Exit
 }
 
 if ($action -and ($Serial -or $Nodes.Count -le 1)) {
@@ -692,14 +762,14 @@ while ($Tasks.Count -gt 0) {
     $nodeId = $Tasks[$node]['Id']
     Switch ($task.State) {
       'Success' {
-        $ConfigInfo = @{
+        $ConfigData = @{
           'Node' = $node;
           'Id' = $nodeId;
           'Info' = $StorageInfo.Get_Item($node);
           'PowerOn' = $Tasks[$node]['PowerOn']
         }
-        $ScriptBlock = [scriptblock]::create("$($script:MyInvocation.MyCommand.Path) -Config $ConfigInfo")
-        $Jobs += Start-Job -Name $node -ScriptBlock $ScriptBlock
+        ConfigAndStart-Node -ConfigData $ConfigData
+        #$Jobs += Start-Job -Name $node -ScriptBlock $ScriptBlock
         $Tasks.Remove($node)
         Continue
       }
@@ -724,14 +794,20 @@ if (! $Jobs) {
   Exit 0
 }
 
-Write-Host "Checking jobs: " $Jobs
 while (($Jobs | Where-Object { $_.State -eq 'Running' }).Count -gt 0) {
   $Jobs | Receive-Job
   Start-Sleep -Seconds 3
 }
 
 Write-Host "Job Status"
-$Jobs | Receive-Job -Wait -AutoRemoveJob -WriteJobInResults | Select *
+$Jobs | Receive-Job -Wait -AutoRemoveJob -WriteJobInResults | % {
+  if ($_.State -eq 'Completed') {
+    Write-Host "Completed deployment of $($_.Name)"
+  }
+  else {
+    Write-Host -ForegroundColor Red "Error: Deployment of $($_.Name) failed"
+    $_ | fl * -Force
+  }
+}
 
-Write-Host "Removing jobs"
 $action | Remove-Job -Force
