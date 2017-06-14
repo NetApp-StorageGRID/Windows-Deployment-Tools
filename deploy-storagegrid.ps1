@@ -56,7 +56,7 @@ if ($vmMod.Version.Major -lt 5 -or ($vmMod.version.major -eq 5 -and $vmMod.versi
 }
 
 if (! $ConfigData) {
-  Write-Host "Using PowerCLI Version $($vmMod.Version)"
+  Write-Host "Using PowerCLI Version $($vmMod.Version)`n"
 }
 
 # Initialize some constants
@@ -236,7 +236,6 @@ function Login-VIServer {
   )
 
   if ($global:CurTarget -eq $Target -And $global:CurUsername -eq $User -And $global:CurPassword -eq $Password) {
-    Write-Host "`nUsing existing connection$ to vCenter Server $defaultVIServer"
     return
   }
 
@@ -426,7 +425,7 @@ function Find-Host {
 function Parse-Disk {
   param (
     [parameter(mandatory=$true, position=0)]
-    [string[]]$DiskSpec,
+    [string[]]$DiskStmts,
 
     [parameter(mandatory=$true, position=1)]
     [string]$NodeType,
@@ -441,7 +440,7 @@ function Parse-Disk {
   $totalInstances = 0
   $diskSpecs = @()
   # Ex:   DISK  = INSTANCES = 2 , CAPACITY = 100, DATASTORE = ds1
-  $DiskSpec | %{ 
+  $DiskStmts | %{ 
     $parts = $_ -Split ','
     if ($parts.Count -lt 2) {
       throw [System.ArgumentException] "Malformed DISK option"
@@ -453,14 +452,11 @@ function Parse-Disk {
       }
       $opt = $param[0].Trim().ToUpper()
       $val = $param[1].Trim()
-      if ($opt -eq "INSTANCES") {
-        $instances = $val
-      }
-      elseif ($opt -eq "CAPACITY") {
-        $capacity = $val
-      }
-      elseif ($opt -eq "DATASTORE") {
-        $datastore = $val
+      switch ($opt) {
+        'INSTANCES' { $instances = $val; Continue }
+        'CAPACITY' { $capacity = $val; Continue }
+        'DATASTORE' { $datastore = $val; Continue }
+        default { throw [System.ArgumentException] "Unknown DISK option $opt" }
       }
     }
     if (! $instances -Or ! $capacity) {
@@ -469,14 +465,16 @@ function Parse-Disk {
     if (! $datastore) {
       $datastore = $Datastore
     }
-    if ($NodeType -eq 'VM_Admin_Node') {
-      if ($capacity -lt 100) {
-        throw [System.ArgumentException] "Admin node DISK option must have CAPACITY >= 100"
+    switch ($NodeType) {
+      'VM_Admin_Node' {
+        if ($capacity -lt 100) {
+          throw [System.ArgumentException] "Admin node DISK option must have CAPACITY >= 100"
+        }
       }
-    }
-    elseif ($NodeType -eq 'VM_Storage_Node') {
-      if ($capacity -lt 50) {
-        throw [System.ArgumentException] "Storage node DISK option must have CAPACITY >= 50 (production minimum is 4096)"
+      'VM_Storage_Node' {
+        if ($capacity -lt 50) {
+          throw [System.ArgumentException] "Storage node DISK option must have CAPACITY >= 50 (production minimum is 4096)"
+        }
       }
     }
     if (! $Datastores.ContainsKey($datastore)) {
@@ -598,9 +596,11 @@ if (! $Validate) {
 }
 
 # Deploy nodes
+$ArgErrors = 0
 $nodeId = 0
 $error_found = $false
 foreach ($node in $Nodes) {
+  $script:StartTime = get-date
   if ('default' -eq $node) { continue }
   if (! $config.Contains($node)) {
     Write-Host -ForegroundColor RED "Error: Node $node not found in configuration file $Filepath"
@@ -622,13 +622,17 @@ foreach ($node in $Nodes) {
     $username = Get-Value -Config $config -Section $node -Name 'USERNAME'
     $password = Get-Value -Config $config -Section $node -Name 'PASSWORD'
 
-    # Doesn't log in unless 
+    # Doesn't log in unless necessary 
     Login-VIServer -Target $target -User $username -Password $password
 
     # Start building Import-VApp arguments
     $ImportArgs = @{
       'Confirm' = $false;
       'Name' = $node;
+    }
+
+    if ($Validate) {
+      Write-Host "Validating $node"
     }
 
     # Get the location we are deploying from TARGET
@@ -689,9 +693,9 @@ foreach ($node in $Nodes) {
     }
 
     # See if we have a DISK option.  If so, gather up storage parameters
-    $diskSpec = Get-Value  -Config $config -Section $node -Name 'DISK'
-    if ($diskSpec) {
-      $diskSpecs = Parse-Disk -DiskSpec $diskSpec -NodeType $nodeType -Datastore $dsName
+    $diskStmts = Get-Value  -Config $config -Section $node -Name 'DISK'
+    if ($diskStmts) {
+      $diskSpecs = Parse-Disk -DiskStmts $diskStmts -NodeType $nodeType -Datastore $dsName
       $StorageInfo[$node] = @{
         'Node' = $node;
         'Id' = $nodeId;
@@ -733,6 +737,7 @@ foreach ($node in $Nodes) {
   }
   Catch [System.ArgumentException]
   {
+    $ArgErrors++
     Write-Host -ForegroundColor Red "Error: $($node): $_"
   }
   Catch
@@ -745,6 +750,12 @@ foreach ($node in $Nodes) {
 }
 
 if ($Validate) {
+  if ($ArgErrors -gt 0) {
+    Write-Host -ForegroundColor Red "Configuration Errors Found."
+  }
+  else {
+    Write-Host "Configuration validated."
+  }
   Exit
 }
 
