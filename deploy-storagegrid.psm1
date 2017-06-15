@@ -59,6 +59,7 @@ function Install-StorageGRID {
     [PSObject]$ConfigData
   )
 
+
   if (!$ConfigFile) {
     Write-Error "ConfigFile must be specified"
     Return
@@ -819,7 +820,8 @@ function Install-StorageGRID {
             'PowerOn' = $Tasks[$curNode]['PowerOn']
           }
           ConfigAndStart-Node -ConfigData $ConfigData
-          #$Jobs += Start-Job -Name $node -ScriptBlock $ScriptBlock
+          $Jobs += Start-Job -Name $node -InitializationScript { Import-Module -Name "($MyInvocation.MyCommand.Module | Get-Module).Path" } `
+                                         -ScriptBlock { Deploy-StorageGRID -ConfigData $Args[0] } -ArgumentList $ConfigData
           $Tasks.Remove($curNode)
           Continue
         }
