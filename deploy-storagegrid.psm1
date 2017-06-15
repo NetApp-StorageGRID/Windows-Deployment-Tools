@@ -286,7 +286,7 @@ function Install-StorageGRID {
     $global:CurPassword = $null
     Disconnect-VIServer -Force -Confirm:$false -ErrorAction SilentlyContinue
     Try {
-      Connect-VIServer -Server $Target.Host -User $User -Password $Password -ErrorAction Stop > $null
+      Connect-VIServer -Server $Target.Host -User $User -Password $Password -ErrorAction Stop | Out-Null
       $global:CurTarget = $Target
       $global:CurUsername = $User
       $global:CurPassword = $Password
@@ -554,7 +554,7 @@ function Install-StorageGRID {
     New-Event -SourceIdentifier StorageEvent -Sender $Info.Id -MessageData $Status.Replacing.PadRight($Status.MaxLen) -EventArguments @{
       'PercentComplete' = $(1/($totalInstances+1)*100);
       'Node' = $Info.Node;
-    } > $null
+    } | Out-Null
     $progressPreference = 'silentlyContinue'
     $VM | Get-HardDisk -Name 'Hard disk [2-4]' | Remove-HardDisk -Confirm:$false
     $progressPreference = 'Continue'
@@ -569,9 +569,9 @@ function Install-StorageGRID {
         New-Event -SourceIdentifier StorageEvent -Sender $Info.Id -MessageData $Msg -EventArguments @{
           'PercentComplete' = $(($i+1)/($totalInstances+1)*100);
           'Node' = $Info.Node;
-        } > $null
+        } | Out-Null
         $progressPreference = 'silentlyContinue'
-        $VM | New-HardDisk -CapacityGB $capacity -Datastore $datastore -Persistence persistent -StorageFormat $Info.DiskFormat -WarningAction SilentlyContinue > $null
+        $VM | New-HardDisk -CapacityGB $capacity -Datastore $datastore -Persistence persistent -StorageFormat $Info.DiskFormat -WarningAction SilentlyContinue | Out-Null
         $progressPreference = 'Continue'
       }
     }
@@ -804,65 +804,78 @@ function Install-StorageGRID {
     Return
   }
 
-  # Monitor tasks
-
-  $Jobs = @()
-  while ($Tasks.Count -gt 0) {
-    foreach ($curNode in $($Tasks.Keys)) {
-      $task = $Tasks[$curNode]['Task']
-      $nodeId = $Tasks[$curNode]['Id']
-      Switch ($task.State) {
-        'Success' {
-          $ConfigData = @{
-            'Node' = $curNode;
-            'Id' = $nodeId;
-            'Info' = $StorageInfo.Get_Item($curNode);
-            'PowerOn' = $Tasks[$curNode]['PowerOn']
+  # Setup threading environment
+  $ISS = [system.management.automation.runspaces.initialsessionstate]::CreateDefault()
+  $RunspacePool = [runspacefactory]::CreateRunspacePool(1, $Tasks.Count, $ISS, $Host)
+  $RunspacePool.Open()
+  
+  Try {
+    # Monitor tasks and spawn reconfig threads if necessary
+    $Jobs = @()
+    while ($Tasks.Count -gt 0) {
+      foreach ($curNode in $($Tasks.Keys)) {
+        $task = $Tasks[$curNode]['Task']
+        $nodeId = $Tasks[$curNode]['Id']
+          Switch ($task.State) {
+          'Success' {
+            $ConfigData = @{
+              'Node' = $curNode;
+              'Id' = $nodeId;
+              'Info' = $StorageInfo.Get_Item($curNode);
+              'PowerOn' = $Tasks[$curNode]['PowerOn']
+            }
+            $Thread = [powershell]::Create().AddCommand($MyInvocation.MyCommand.Name)
+            $Thread.AddParameter('ConfigData', $ConfigData) | Out-Null
+            $Thread.RunspacePool = $RunspacePool
+            $Handle = $Thread.BeginInvoke()
+            $JobProps = @{ 
+              'Name' = $curNode;
+              'Handle' = $Handle;
+              'Thread' = $Thread
+            }
+            $Job = New-Object -TypeName PSObject -Property $JobProps
+            $Jobs += $Job
+            $Tasks.Remove($curNode)
+            Continue
           }
-          ConfigAndStart-Node -ConfigData $ConfigData
-          $Jobs += Start-Job -Name $node -InitializationScript { Import-Module -Name "($MyInvocation.MyCommand.Module | Get-Module).Path" } `
-                                         -ScriptBlock { Deploy-StorageGRID -ConfigData $Args[0] } -ArgumentList $ConfigData
-          $Tasks.Remove($curNode)
-          Continue
-        }
-        'Error' {
-          $Tasks.Remove($curNode)
-          Write-Progress -Id $nodeId -Activity "Deploy Node $curNode" -Completed
-          Write-Host -ForegroundColor Red "Deployment failed for node ${curNode}: " $task.TerminatingError.Message
-          Continue
-        }
-        default {
-          Write-Progress -Id $nodeId -Activity "Deploy Node $curNode" -Status $Status.Importing.PadRight($Status.MaxLen) -PercentComplete $task.PercentComplete
+          'Error' {
+            $Tasks.Remove($curNode)
+            Write-Progress -Id $nodeId -Activity "Deploy Node $curNode" -Completed
+            Write-Host -ForegroundColor Red "Deployment failed for node ${curNode}: " $task.TerminatingError.Message
+            Continue
+          }
+          default {
+            Write-Progress -Id $nodeId -Activity "Deploy Node $curNode" -Status $Status.Importing.PadRight($Status.MaxLen) -PercentComplete $task.PercentComplete
+          }
         }
       }
+      if ($Tasks.Count -gt 0) {
+        Start-Sleep -Seconds 5
+      }
     }
-    if ($Tasks.Count -gt 0) {
-      Start-Sleep -Seconds 5
+
+    if ($Jobs.Count -le 0) {
+      Return
     }
-  }
 
-
-  if ($Jobs) {
-    Write-Host "Waiting on jobs"
-    while (($Jobs | Where-Object { $_.State -eq 'Running' }).Count -gt 0) {
-      $Jobs | Receive-Job
+    Write-Host "Waiting on threads"
+    While (($Jobs | Where-Object { $_.Handle -ne $Null }).Count -gt 0) {
+      ForEach ($Job in $($Jobs | Where-Object {$_.Handle.IsCompleted})) {
+            $Job.Thread.EndInvoke($Job.Handle)
+            $Job.Thread.Dispose()
+            $Job.Thread = $Null
+            $Job.Handle = $Null
+            $ResultTimer = Get-Date
+      }
       Start-Sleep -Seconds 3
     }
-
-    Write-Host "Job Status"
-    $Jobs | Receive-Job -Wait -AutoRemoveJob -WriteJobInResults | % {
-      if ($_.State -eq 'Completed') {
-        Write-Host "Completed deployment of $($_.Name)"
-      }
-      else {
-        Write-Host -ForegroundColor Red "Error: Deployment of $($_.Name) failed"
-        $_ | fl * -Force
-      }
-    }
   }
-
-  if ($action) {
-    $action | Remove-Job -Force
+  Finally {
+    if ($action) {
+      $action | Remove-Job -Force
+    }
+    $RunspacePool.Close() | Out-Null
+    $RunspacePool.Dispose() | Out-Null
   }
 }
 
