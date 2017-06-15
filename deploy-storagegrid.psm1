@@ -1,5 +1,4 @@
-function Deploy-StorageGRID
-{
+function Install-StorageGRID {
   [CmdletBinding(DefaultParameterSetName="Deploy")]
   param (
     [parameter(Position=0,
@@ -60,7 +59,6 @@ function Deploy-StorageGRID
     [PSObject]$ConfigData
   )
 
-  BEGIN {
   if (!$ConfigFile) {
     Write-Error "ConfigFile must be specified"
     Return
@@ -145,8 +143,8 @@ function Deploy-StorageGRID
       [string]$ConfigFile
     )
 
-    $ini = New-Object System.Collections.Specialized.OrderedDictionary
-    $currentSection = New-Object System.Collections.Specialized.OrderedDictionary
+    $ini = [ordered]@{}
+    $currentSection = [ordered]@{}
     $curSectionName = "default"
     $lineno = 0
     Switch -regex (gc $ConfigFile) {
@@ -169,7 +167,7 @@ function Deploy-StorageGRID
         if ($ini.Contains($curSectionName)) {
           throw "Duplicate node name $curSectionName at line $lineno"
         }
-        $currentSection = New-Object System.Collections.Specialized.OrderedDictionary
+        $currentSection = [ordered]@{}
         Continue
       }
       "(?<key>\w+)\s*\=\s*(?<value>.*)" {
@@ -616,7 +614,7 @@ function Deploy-StorageGRID
   $Config = Get-IniFile $ConfigFile -ErrorAction Stop
 
   if (! $Nodes) {
-    $Nodes = ($Config.Keys | % { $_ })
+    $Nodes = $Config.Keys
   }
 
   if (! $Validate) {
@@ -640,10 +638,10 @@ function Deploy-StorageGRID
   $ArgErrors = 0
   $nodeId = 0
   $error_found = $false
-  foreach ($node in $Nodes) {
-    if ('default' -eq $node) { continue }
-    if (! $Config.ContainsKey($node)) {
-      Write-Host -ForegroundColor RED "Error: Node $node not found in configuration file $Filepath"
+  foreach ($curNode in $Nodes) {
+    if ('default' -eq $curNode) { continue }
+    if (! $Config.Contains($curNode)) {
+      Write-Host -ForegroundColor RED "Error: Node $curNode not found in configuration file $Filepath"
       $error_found = $true
       $ArgErrors++
       Continue
@@ -653,15 +651,15 @@ function Deploy-StorageGRID
     }
     $nodeId++
     Try {
-      $target = [System.Uri](Get-Value -Config $Config -Section $node -Name 'TARGET')
+      $target = [System.Uri](Get-Value -Config $Config -Section $curNode -Name 'TARGET')
       $leaf = Split-Path $target.AbsolutePath -Leaf
       if (! $leaf)
       {
         throw [System.ArgumentException] "Malformed TARGET, path must end in either a Cluster, VApp, or Resource Pool"
       }
 
-      $username = Get-Value -Config $Config -Section $node -Name 'USERNAME'
-      $password = Get-Value -Config $Config -Section $node -Name 'PASSWORD'
+      $username = Get-Value -Config $Config -Section $curNode -Name 'USERNAME'
+      $password = Get-Value -Config $Config -Section $curNode -Name 'PASSWORD'
 
       # Doesn't log in unless necessary
       Login-VIServer -Target $target -User $username -Password $password
@@ -669,11 +667,11 @@ function Deploy-StorageGRID
       # Start building Import-VApp arguments
       $ImportArgs = @{
         'Confirm' = $false;
-        'Name' = $node;
+        'Name' = $curNode;
       }
 
       if ($Validate) {
-        Write-Host "Validating $node"
+        Write-Host "Validating $curNode"
       }
 
       # Get the location we are deploying from TARGET
@@ -695,13 +693,13 @@ function Deploy-StorageGRID
       # If source isn't passed in, look for it in the config file
       if (! $source)
       {
-        $source = Get-Value -Config $Config -Section $node -Name 'SOURCE'
+        $source = Get-Value -Config $Config -Section $curNode -Name 'SOURCE'
       }
 
       # Get the OVF file for our type and add it to source path if we have one
       # Also does NODE_TYPE validation
-      $nodeType = Get-Value -Config $Config -Section $Node -Name 'NODE_TYPE'
-      $ovfFile = Get-OvfFile -Config $Config -Node $node -NodeType $nodeType
+      $nodeType = Get-Value -Config $Config -Section $curNode -Name 'NODE_TYPE'
+      $ovfFile = Get-OvfFile -Config $Config -Node $curNode -NodeType $nodeType
       if ($source)
       {
         $ovfFile = Join-Path -Path $source -ChildPath $ovfFile
@@ -709,11 +707,11 @@ function Deploy-StorageGRID
       $ImportArgs.Add('Source', $ovfFile)
 
       # Build an OvfConfiguration with our parameters
-      $ovfConfig = Get-OvfConfig -Config $Config -Node $node -OvfFile $ovfFile
+      $ovfConfig = Get-OvfConfig -Config $Config -Node $curNode -OvfFile $ovfFile
       $ImportArgs.Add('OvfConfiguration', $ovfConfig)
 
       # OVFTOOL based INI files combine arguments into a single setting (alas)
-      $ovftool_arguments = (Get-Value  -Config $Config -Section $node -Name 'OVFTOOL_ARGUMENTS') -split '[\s=]'
+      $ovftool_arguments = (Get-Value  -Config $Config -Section $curNode -Name 'OVFTOOL_ARGUMENTS') -split '[\s=]'
 
       # Add our disk format, if specified
       $dsFormat = Get-OvfArgumentValue -OvfArguments $ovftool_arguments -Name '--diskMode'
@@ -734,11 +732,11 @@ function Deploy-StorageGRID
       }
 
       # See if we have a DISK option.  If so, gather up storage parameters
-      $diskStmts = Get-Value -Config $Config -Section $node -Name 'DISK'
+      $diskStmts = Get-Value -Config $Config -Section $curNode -Name 'DISK'
       if ($diskStmts) {
         $diskSpecs = Parse-Disk -DiskStmts $diskStmts -NodeType $nodeType -Datastore $dsName
-        $StorageInfo[$node] = @{
-          'Node' = $node;
+        $StorageInfo[$curNode] = @{
+          'Node' = $curNode;
           'Id' = $nodeId;
           'DiskFormat' = $dsFormat;
           'Datastore' = $dsName;
@@ -752,16 +750,16 @@ function Deploy-StorageGRID
         Continue
       }
 
-      Write-Host "Deploying $node to $vmHost in datastore $dsName"
+      Write-Host "Deploying $curNode to $vmHost in datastore $dsName"
       $Error.clear()
       if ($Serial -Or $Nodes.Count -eq 1) {
         #$vm = Get-VM $node
-        $vm = Import-VApp @ImportArgs
+        $vm = Import-VApp @ImportArgs -ErrorAction Stop
         if ($Error.Count -le 0) {
           ConfigAndStart-Node -ConfigData @{
-            'Node' = $node;
+            'Node' = $curNode;
             'Id' = $nodeId;
-            'Info' = $StorageInfo[$node];
+            'Info' = $StorageInfo[$curNode];
             'PowerOn' = ($ovftool_arguments -contains "--powerOn");
           }
         }
@@ -769,7 +767,7 @@ function Deploy-StorageGRID
       else {
         # Import the OVF asynchronously, keeping track of tasks.
         $task = Import-VApp @ImportArgs -RunAsync -ErrorAction Stop
-        $Tasks[$node] = @{
+        $Tasks[$curNode] = @{
           'Id' = $nodeId;
           'Task' = $task;
           'PowerOn' = ($ovftool_arguments -contains "--powerOn");
@@ -778,7 +776,7 @@ function Deploy-StorageGRID
     }
     Catch [System.ArgumentException] {
       $ArgErrors++
-      Write-Host -ForegroundColor Red "Error: $($node): $_"
+      Write-Host -ForegroundColor Red "Error: $($curNode): $_"
     }
     Catch {
       if ($action) {
@@ -809,30 +807,30 @@ function Deploy-StorageGRID
 
   $Jobs = @()
   while ($Tasks.Count -gt 0) {
-    foreach ($node in $($Tasks.Keys)) {
-      $task = $Tasks[$node]['Task']
-      $nodeId = $Tasks[$node]['Id']
+    foreach ($curNode in $($Tasks.Keys)) {
+      $task = $Tasks[$curNode]['Task']
+      $nodeId = $Tasks[$curNode]['Id']
       Switch ($task.State) {
         'Success' {
           $ConfigData = @{
-            'Node' = $node;
+            'Node' = $curNode;
             'Id' = $nodeId;
-            'Info' = $StorageInfo.Get_Item($node);
-            'PowerOn' = $Tasks[$node]['PowerOn']
+            'Info' = $StorageInfo.Get_Item($curNode);
+            'PowerOn' = $Tasks[$curNode]['PowerOn']
           }
           ConfigAndStart-Node -ConfigData $ConfigData
           #$Jobs += Start-Job -Name $node -ScriptBlock $ScriptBlock
-          $Tasks.Remove($node)
+          $Tasks.Remove($curNode)
           Continue
         }
         'Error' {
-          $Tasks.Remove($node)
-          Write-Progress -Id $nodeId -Activity "Deploy Node $node" -Completed
-          Write-Host -ForegroundColor Red "Deployment failed for node ${node}: " $task.TerminatingError.Message
+          $Tasks.Remove($curNode)
+          Write-Progress -Id $nodeId -Activity "Deploy Node $curNode" -Completed
+          Write-Host -ForegroundColor Red "Deployment failed for node ${curNode}: " $task.TerminatingError.Message
           Continue
         }
         default {
-          Write-Progress -Id $nodeId -Activity "Deploy Node $node" -Status $Status.Importing.PadRight($Status.MaxLen) -PercentComplete $task.PercentComplete
+          Write-Progress -Id $nodeId -Activity "Deploy Node $curNode" -Status $Status.Importing.PadRight($Status.MaxLen) -PercentComplete $task.PercentComplete
         }
       }
     }
@@ -865,6 +863,6 @@ function Deploy-StorageGRID
     $action | Remove-Job -Force
   }
 }
-PROCESS{}
-END{}
-}
+
+Set-Alias -Name Deploy-StorageGRID -Value Install-StorageGRID
+Export-ModuleMember -Function Install-StorageGRID -Alias Deploy-StorageGRID
