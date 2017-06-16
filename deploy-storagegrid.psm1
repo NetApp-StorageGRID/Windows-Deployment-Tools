@@ -4,18 +4,11 @@ function Install-StorageGRID {
   Install-StorageGRID (alias Deploy-StorageGRID) installs StorageGRID Webscale VM images into vSphere using PowerCLI.
 
   .DESCRIPTION
-  Deploy-StorageGRID takes the same INI configuration file format as the deploy-vsphere-ovftool.sh script documented
-  in the product, with an enhanced DISK statement that accepts a DATASTORE= parameter to allow individual disks to be
-  spread across multiple datastores (the root disk of the VM uses the values specified in OVFTOOL_ARGUMENTS, see the
-  the comments in the deploy-vsphere-ovftool.sample.ini file for details).
+  Deploy-StorageGRID takes the same INI configuration file format as the deploy-vsphere-ovftool.sh script documented in the product, with an enhanced DISK statement that accepts a DATASTORE= parameter to allow individual disks to be spread across multiple datastores (the root disk of the VM uses the values specified in OVFTOOL_ARGUMENTS, see the the comments in the deploy-vsphere-ovftool.sample.ini file for details).
 
-  By default, the script will upload the OVF files to vCenter in parallel; specify the -Serial switch to upload the
-  OVFs one by one. Once uploaded, the VMs are reconfigured for storage if a DISK option is specified in the configuration
-  file, and started if OVFTOOL_ARGUMENTS contains the --powerOn flag.
+  By default, the script will upload the OVF files to vCenter in parallel; specify the -Serial switch to upload the OVFs one by one. Once uploaded, the VMs are reconfigured for storage if a DISK option is specified in the configuration file, and started if OVFTOOL_ARGUMENTS contains the --powerOn flag.
 
-  The actual command name is Install-StorageGRID, which avoids warnings about unapproved verbs in the command name. To be
-  more consistent with existing deployment tools, the command is aliased to Deploy-StorageGRID. Either may be used and are
-  the same.
+  The actual command name is Install-StorageGRID, which avoids warnings about unapproved verbs in the command name.  To be more consistent with existing deployment tools, the command is aliased to Deploy-StorageGRID. Either may be used and are the same.
 
   .PARAMETER ConfigFile
   Full path to the node configuration INI file. See deploy-vsphere-ovftool.sample.ini for detailed usage comments.
@@ -806,7 +799,7 @@ function Install-StorageGRID {
         Continue
       }
 
-      Write-Host "Deploying $curNode to $vmHost in datastore $dsName"
+      Write-Host "Deploying $curNode to $vmHost on datastore $dsName"
       $Error.clear()
       if ($Serial -Or $Nodes.Count -eq 1) {
         #$vm = Get-VM $node
@@ -844,15 +837,16 @@ function Install-StorageGRID {
 
   if ($Validate) {
     if ($ArgErrors -gt 0) {
-      Write-Host -ForegroundColor Red "Configuration Errors Found."
+      Write-Host -ForegroundColor Red "Configuration Errors Found.`n"
     }
     else {
-      Write-Host "Configuration validated."
+      Write-Host "Configuration validated.`n"
     }
     Return
   }
 
   if ($Serial -or $Nodes.Count -le 1) {
+    Write-Host "`n"
     if ($action) {
       $action | Remove-Job -Force
     }
@@ -894,6 +888,7 @@ function Install-StorageGRID {
     }
   }
   Finally {
+    Write-Host "`n"
     if ($action) {
       $action | Remove-Job -Force
     }
