@@ -1,4 +1,78 @@
 function Install-StorageGRID {
+<#
+  .SYNOPSIS
+  Install-StorageGRID (alias Deploy-StorageGRID) installs StorageGRID Webscale VM images into vSphere using PowerCLI.
+
+  .DESCRIPTION
+  Deploy-StorageGRID takes the same INI configuration file format as the deploy-vsphere-ovftool.sh script documented
+  in the product, with an enhanced DISK statement that accepts a DATASTORE= parameter to allow individual disks to be
+  spread across multiple datastores (the root disk of the VM uses the values specified in OVFTOOL_ARGUMENTS, see the
+  the comments in the deploy-vsphere-ovftool.sample.ini file for details).
+
+  By default, the script will upload the OVF files to vCenter in parallel; specify the -Serial switch to upload the
+  OVFs one by one. Once uploaded, the VMs are reconfigured for storage if a DISK option is specified in the configuration
+  file, and started if OVFTOOL_ARGUMENTS contains the --powerOn flag.
+
+  The actual command name is Install-StorageGRID, which avoids warnings about unapproved verbs in the command name. To be
+  more consistent with existing deployment tools, the command is aliased to Deploy-StorageGRID. Either may be used and are
+  the same.
+
+  .PARAMETER ConfigFile
+  Full path to the node configuration INI file. See deploy-vsphere-ovftool.sample.ini for detailed usage comments.
+
+  .PARAMETER Validate
+  Simply validate the configuration file and exit.
+
+  .PARAMETER Serial
+  Upload the OVF files to vCenter one after the other. The default is to upload them simultaneously.
+
+  .PARAMETER Source
+  Override the value of SOURCE in the configuration file.
+
+  .PARAMETER Node
+  Nodes to validate or deploy. The default is to validate or deploy all nodes defined in the configuration file.
+
+  .EXAMPLE
+  Deploy-StorageGRID -ConfigFile .\grid.ini
+
+  Deploy all grid nodes defined in grid.ini in parallel using the SOURCE value in grid.ini.
+
+  .EXAMPLE
+  Deploy-StorageGRID -ConfigFile .\grid.ini -Node dc1-adm1,dc1-g1
+
+  Deploy only the specified grid nodes.
+
+  .EXAMPLE
+  Deploy-StorageGRID -ConfigFile .\grid.ini -Source c:\StorageGRID-10.4.0\vsphere
+
+  Deploy all grid nodes defined in grid.ini overriding the value of SOURCE
+
+  .EXAMPLE
+  Deploy-StorageGRID -ConfigFile .\grid.ini -Validate
+
+  Validate the configuration for all grid nodes in grid.ini
+
+  .EXAMPLE
+  Deploy-StorageGRID -ConfigFile .\grid.ini -Serial
+
+  Deploy all grid nodes defined in grid.ini one after the other.
+
+  .INPUTS
+  System.String[]. Node names to deploy or validate.
+
+  .OUTPUTS
+  None
+
+  .LINK
+  http://www.netapp.com/us/products/data-management-software/object-storage-grid-sds.aspx
+
+  .LINK
+  https://mysupport.netapp.com/info/web/ECMLP2472003.html
+
+  .LINK
+  http://www.netapp.com/
+
+#>
   [CmdletBinding(DefaultParameterSetName="Deploy")]
   param (
     [parameter(Position=0,
@@ -26,14 +100,12 @@ function Install-StorageGRID {
     [parameter(Position=2,
                ParameterSetName="Deploy"
               )]
-    [ValidateNotNullOrEmpty()]
     [switch]$Serial=$false,
 
     [parameter(Position=2,
                ParameterSetName="Validate",
                Mandatory
               )]
-    [ValidateNotNullOrEmpty()]
     [switch]$Validate=$false,
 
     [parameter(Position=3,
@@ -48,15 +120,7 @@ function Install-StorageGRID {
                ValueFromPipelineByPropertyName,
                ValueFromRemainingArguments
               )]
-    [string[]]$Node,
-
-    [parameter(position=0,
-               ParameterSetName="Job",
-               Mandatory,
-               ValueFromPipeline,
-               DontShow
-              )]
-    [PSObject]$ConfigData
+    [string[]]$Node
   )
 
 
@@ -71,7 +135,7 @@ function Install-StorageGRID {
     'VMware.VimAutomation.Storage'
   )
 
-  # Try to load VMware PowerCLI.  No point in doing anything if that fails
+  # Try to load VMware PowerCLI. No point in doing anything if that fails
   $Error.Clear()
   foreach ($mod in $VIModules) {
     if (!(Get-Module -Name $mod -ErrorAction SilentlyContinue)) {
@@ -94,10 +158,7 @@ function Install-StorageGRID {
   if ($vmMod.Version.Major -lt 5 -or ($vmMod.version.major -eq 5 -and $vmMod.version.minor -lt 5)) { #check PowerCLI version
     throw "Error: Unsupported PowerCLI version: Must be 5.5 or greater"
   }
-
-  if (! $ConfigData) {
-    Write-Host "Using PowerCLI Version $($vmMod.Version)`n"
-  }
+  Write-Host "Using PowerCLI Version $($vmMod.Version)`n"
 
   # Initialize some constants
   $ValidDiskModes = @('thin', 'thick', 'eagerzeroedthick')
@@ -336,7 +397,7 @@ function Install-StorageGRID {
     }
 
     if ($netConfig -eq 'DISABLED') {
-      # All interfaces must have a value, even if disabled.  Use grid network, which must be defined.
+      # All interfaces must have a value, even if disabled. Use grid network, which must be defined.
       $ovfConfig.NetworkMapping.psobject.Members["$($Network)_Network"].Value.Value = $GridPortGroup
       return
     }
@@ -597,12 +658,6 @@ function Install-StorageGRID {
   # MAIN
   #
 
-  # Background job case
-  if ($ConfigData) {
-    ConfigAndStart-Node -ConfigData $ConfigData
-    Return
-  }
-
   # Keep track of which vCenter/account we are currently logged into
   # so we don't log in unnecessarily
   $CurTarget = $null
@@ -732,7 +787,7 @@ function Install-StorageGRID {
         $ImportArgs.Add('Datastore', $Datastores[$dsName])
       }
 
-      # See if we have a DISK option.  If so, gather up storage parameters
+      # See if we have a DISK option. If so, gather up storage parameters
       $diskStmts = Get-Value -Config $Config -Section $curNode -Name 'DISK'
       if ($diskStmts) {
         $diskSpecs = Parse-Disk -DiskStmts $diskStmts -NodeType $nodeType -Datastore $dsName
@@ -804,14 +859,8 @@ function Install-StorageGRID {
     Return
   }
 
-  # Setup threading environment
-  $ISS = [system.management.automation.runspaces.initialsessionstate]::CreateDefault()
-  $RunspacePool = [runspacefactory]::CreateRunspacePool(1, $Tasks.Count, $ISS, $Host)
-  $RunspacePool.Open()
-  
   Try {
-    # Monitor tasks and spawn reconfig threads if necessary
-    $Jobs = @()
+    # Monitor tasks and complete reconfig/startup if necessary
     while ($Tasks.Count -gt 0) {
       foreach ($curNode in $($Tasks.Keys)) {
         $task = $Tasks[$curNode]['Task']
@@ -824,17 +873,7 @@ function Install-StorageGRID {
               'Info' = $StorageInfo.Get_Item($curNode);
               'PowerOn' = $Tasks[$curNode]['PowerOn']
             }
-            $Thread = [powershell]::Create().AddCommand($MyInvocation.MyCommand.Name)
-            $Thread.AddParameter('ConfigData', $ConfigData) | Out-Null
-            $Thread.RunspacePool = $RunspacePool
-            $Handle = $Thread.BeginInvoke()
-            $JobProps = @{ 
-              'Name' = $curNode;
-              'Handle' = $Handle;
-              'Thread' = $Thread
-            }
-            $Job = New-Object -TypeName PSObject -Property $JobProps
-            $Jobs += $Job
+            ConfigAndStart-Node -ConfigData $ConfigData
             $Tasks.Remove($curNode)
             Continue
           }
@@ -853,29 +892,11 @@ function Install-StorageGRID {
         Start-Sleep -Seconds 5
       }
     }
-
-    if ($Jobs.Count -le 0) {
-      Return
-    }
-
-    Write-Host "Waiting on threads"
-    While (($Jobs | Where-Object { $_.Handle -ne $Null }).Count -gt 0) {
-      ForEach ($Job in $($Jobs | Where-Object {$_.Handle.IsCompleted})) {
-            $Job.Thread.EndInvoke($Job.Handle)
-            $Job.Thread.Dispose()
-            $Job.Thread = $Null
-            $Job.Handle = $Null
-            $ResultTimer = Get-Date
-      }
-      Start-Sleep -Seconds 3
-    }
   }
   Finally {
     if ($action) {
       $action | Remove-Job -Force
     }
-    $RunspacePool.Close() | Out-Null
-    $RunspacePool.Dispose() | Out-Null
   }
 }
 
