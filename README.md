@@ -15,7 +15,7 @@ Macro enabled Excel workbook created from SGWS\_Config.xltm with example data.
 ### deploy-storagegrid.psm1
 PowerShell module for installing Deploy-StorageGRID command.  
 Usage:  
-&nbsp;&nbsp;&nbsp;&nbsp;Import-Module <path>\deploy-storagegrid.psm1  
+&nbsp;&nbsp;&nbsp;&nbsp;Import-Module .\deploy-storagegrid.psm1  
 &nbsp;&nbsp;&nbsp;&nbsp;Get-Help Deploy-StorageGRID -Full
 
 ### grid.ini
