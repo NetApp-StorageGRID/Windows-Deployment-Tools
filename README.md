@@ -1,5 +1,5 @@
 # Windows-Deployment-Tools
-This repository contains Windows based tools to assist with StorageGRID Webscale deployment.
+This repository contains Windows based tools to assist with StorageGRID&reg; Webscale deployment.
 
 ## Excel Based Planning and Configuration Tools
 
@@ -18,11 +18,12 @@ Usage:
 &nbsp;&nbsp;&nbsp;&nbsp;Import-Module .\deploy-storagegrid.psm1  
 &nbsp;&nbsp;&nbsp;&nbsp;Get-Help Deploy-StorageGRID -Full
 
-### grid.ini
+### deploy-storagegrid.example.ini
 Example configuration file for use with Deploy-StorageGRID
 
-### deploy-vsphere-ovftool.sample.ini
-Example INI file with detailed comments (from StorageGRID 10.4 vSphere installation package).
+For a detailed explanation of the INI file, see the *deploy-vsphere-ovftool.sample.ini* file in the *vsphere*
+directory of the standard StorageGRID Webscale distribution. This file is meant to be compatible with that format.
+This file can take one additional value, *DATASTORE*, on the *DISK* option. See this file for examples.
 
 # Additional Information
 
