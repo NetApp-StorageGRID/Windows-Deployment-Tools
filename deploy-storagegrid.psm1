@@ -66,7 +66,8 @@ function Install-StorageGRID {
   http://www.netapp.com/
 
 #>
-  [CmdletBinding(DefaultParameterSetName="Deploy")]
+  [CmdletBinding(DefaultParameterSetName="Deploy",
+                 PositionalBinding=$false)]
   param (
     [parameter(Position=0,
                ParameterSetName="Deploy",
@@ -82,38 +83,30 @@ function Install-StorageGRID {
     [string]$ConfigFile,
 
     [parameter(Position=1,
-               ParameterSetName="Deploy"
+               ParameterSetName="Deploy",
+               ValueFromRemainingArguments
               )]
     [parameter(Position=1,
-               ParameterSetName="Validate"
+               ParameterSetName="Validate",
+               ValueFromRemainingArguments
+             )]
+    [string[]]$Nodes,
+
+    [parameter(ParameterSetName="Deploy"
+              )]
+    [parameter(ParameterSetName="Validate"
               )]
     [ValidateNotNullOrEmpty()]
     [string]$Source,
 
-    [parameter(Position=2,
-               ParameterSetName="Deploy"
+    [parameter(ParameterSetName="Deploy"
               )]
     [switch]$Serial=$false,
 
-    [parameter(Position=2,
-               ParameterSetName="Validate",
+    [parameter(ParameterSetName="Validate",
                Mandatory
               )]
-    [switch]$Validate=$false,
-
-    [parameter(Position=3,
-               ParameterSetName="Deploy",
-               ValueFromPipeline,
-               ValueFromPipelineByPropertyName,
-               ValueFromRemainingArguments
-              )]
-    [parameter(Position=3,
-               ParameterSetName="Validate",
-               ValueFromPipeline,
-               ValueFromPipelineByPropertyName,
-               ValueFromRemainingArguments
-              )]
-    [string[]]$Node
+    [switch]$Validate=$false
   )
 
 
