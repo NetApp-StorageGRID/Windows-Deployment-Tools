@@ -23,7 +23,9 @@ Example configuration file for use with Install-StorageGRID
 
 For a detailed explanation of the INI file, see the *deploy-vsphere-ovftool.sample.ini* file in the *vsphere*
 directory of the standard StorageGRID Webscale distribution. This file is meant to be compatible with that format.
-This file can take one additional value, *DATASTORE*, on the *DISK* option. See this file for examples.
+
+This script also accepts *DATASTORE* on the *DISK* option, and you can avoid the need to use ovftool to find 
+the value for TARGET by specifying the vCenter server with VCENTER and the inventory path with PATH. PATH is as you see the hierarchy in vCenter. See file for examples of these enhancements.
 
 # Additional Information
 
