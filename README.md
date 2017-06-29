@@ -12,14 +12,14 @@ Macro enabled Excel workbook created from SGWS\_Config.xltm with example data.
 
 ## PowerShell Scripts
 
-### deploy-storagegrid.psm1
-PowerShell module for installing Deploy-StorageGRID command.  
+### install-storagegrid.psm1
+PowerShell module for installing the **Install-StorageGRID** command. Deploy-StorageGRID is an alias for Install-StorageGRID.  
 Usage:  
-&nbsp;&nbsp;&nbsp;&nbsp;Import-Module .\deploy-storagegrid.psm1  
-&nbsp;&nbsp;&nbsp;&nbsp;Get-Help Deploy-StorageGRID -Full
+&nbsp;&nbsp;&nbsp;&nbsp;Import-Module .\install-storagegrid.psm1  
+&nbsp;&nbsp;&nbsp;&nbsp;Get-Help Install-StorageGRID -Full
 
-### deploy-storagegrid.example.ini
-Example configuration file for use with Deploy-StorageGRID
+### install-storagegrid.example.ini
+Example configuration file for use with Install-StorageGRID
 
 For a detailed explanation of the INI file, see the *deploy-vsphere-ovftool.sample.ini* file in the *vsphere*
 directory of the standard StorageGRID Webscale distribution. This file is meant to be compatible with that format.
