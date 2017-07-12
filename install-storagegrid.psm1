@@ -219,6 +219,7 @@ function Install-StorageGRID {
     'Importing' = "Importing OVF";
     'Adding'    = "Adding hard disk {0,2}"; # It'll be a problem if this becomes longest
     'Replacing' = "Removing existing disks";
+    'Starting'  = "Starting VM";
   }
   $Status.Add('MaxLen', ($Status.Values | Measure -Maximum -Property Length).Maximum)
 
@@ -1118,13 +1119,14 @@ function Replace-Storage {
   $totalInstances = ($Info.DiskSpecs | Measure-Object 'instances' -Sum).Sum
   # First, remove default storage. Hard disk 1 is root - don't delete.
   # Admin nodes have 2-3, SN have 2-4.
+  # Account for remove and starting VM in percent complete
   New-Event -SourceIdentifier StorageEvent -Sender $Info.Id -MessageData $Status.Replacing.PadRight($Status.MaxLen) -EventArguments @{
-    'PercentComplete' = $(1/($totalInstances+1)*100);
+    'PercentComplete' = $(1/($totalInstances+2)*100);
     'Node' = $Info.Node;
   } | Out-Null
-  Write-Verbose "Removing default hard disks"
+  Write-Verbose "$($Info.Node): Removing default hard disks"
   $progressPreference = 'silentlyContinue'
-  $VM | Get-HardDisk -Name 'Hard disk [2-4]' | Remove-HardDisk -Confirm:$false
+  $VM | Get-HardDisk -Name 'Hard disk [2-4]' -Verbose:$false | Remove-HardDisk -Confirm:$false -Verbose:$false
   $progressPreference = 'Continue'
 
   # Create and attach new storage
@@ -1133,14 +1135,14 @@ function Replace-Storage {
     $capacity = $diskSpec.capacity
     $instances = $diskSpec.instances
     for ($i=1; $i -le $instances; $i++) {
-      Write-Verbose "Adding $capacity hard disk on datastore $datastore"
+      Write-Verbose "$($Info.Node): Adding ${capacity}GB hard disk on datastore $datastore"
       $msg = ($Status.Adding -f $i).PadRight($Status.MaxLen)
       New-Event -SourceIdentifier StorageEvent -Sender $Info.Id -MessageData $Msg -EventArguments @{
-        'PercentComplete' = $(($i+1)/($totalInstances+1)*100);
+        'PercentComplete' = $(($i+1)/($totalInstances+2)*100);
         'Node' = $Info.Node;
       } | Out-Null
       $progressPreference = 'silentlyContinue'
-      $VM | New-HardDisk -CapacityGB $capacity -Datastore $datastore -Persistence persistent -StorageFormat $Info.DiskFormat -WarningAction SilentlyContinue | Out-Null
+      $VM | New-HardDisk -CapacityGB $capacity -Datastore $datastore -Persistence persistent -StorageFormat $Info.DiskFormat -WarningAction SilentlyContinue -Verbose:$false | Out-Null
       $progressPreference = 'Continue'
     }
   }
@@ -1154,12 +1156,23 @@ function ConfigAndStart-Node {
 
   Register-EngineEvent -SourceIdentifier StorageEvent -Forward
   if ($ConfigData.Info) {
-    Get-VM -Name $ConfigData.Node | Replace-Storage -Info $ConfigData.Info
+    Get-VM -Name $ConfigData.Node -Verbose:$false | Replace-Storage -Info $ConfigData.Info
   }
   if ($ConfigData.PowerOn) {
-    Write-Verbose "Starting $($ConfigData.Node)"
-    Get-VM -Name $ConfigData.Node | Start-VM -Confirm:$false
+    New-Event -SourceIdentifier StorageEvent -Sender $ConfigData.Id -MessageData $Status.Starting.PadRight($Status.MaxLen) -EventArguments @{
+      'PercentComplete' = 95
+      'Node' = $ConfigData.Node
+    } | Out-Null
+    Write-Verbose "$($ConfigData.Node): Starting VM"
+    $progressPreference = 'silentlyContinue'
+    Get-VM -Name $ConfigData.Node -Verbose:$false | Start-VM -Confirm:$false -Verbose:$false | Out-Null
+    $progressPreference = 'Continue'
   }
+  Write-Verbose "$($ConfigData.Node): Deployment Complete"
+  New-Event -SourceIdentifier StorageEvent -Sender $ConfigData.Id -MessageData $Status.Starting.PadRight($Status.MaxLen) -EventArguments @{
+    'PercentComplete' = 100
+    'Node' = $ConfigData.Node
+  } | Out-Null
 }
 
 Set-Alias -Name Deploy-StorageGRID -Value Install-StorageGRID
