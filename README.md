@@ -18,6 +18,8 @@ Usage:
 &nbsp;&nbsp;&nbsp;&nbsp;Import-Module .\install-storagegrid.psm1  
 &nbsp;&nbsp;&nbsp;&nbsp;Get-Help Install-StorageGRID -Full
 
+Requires: VMware PowerCLI version 5.5 or greater
+
 ### install-storagegrid.example.ini
 Example configuration file for use with Install-StorageGRID
 
